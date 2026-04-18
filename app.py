@@ -144,7 +144,7 @@ st.markdown("""
         margin-bottom: 1.5rem;
     }
 
-    /* Progress bar colour */
+    /* Progress bar */
     .stProgress > div > div > div > div {
         background: linear-gradient(90deg, #007BFF, #00C6FF);
     }
@@ -177,6 +177,16 @@ st.markdown("""
     .badge-mid  { background: rgba(255,193,7,0.15);  color:#ffc107; border:1px solid #ffc107; }
     .badge-low  { background: rgba(220,53,69,0.15);  color:#dc3545; border:1px solid #dc3545; }
 
+    /* Decision pill */
+    .decision-pill {
+        display: inline-block;
+        padding: 3px 12px;
+        border-radius: 12px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        margin-top: 4px;
+    }
+
     /* Chat bubbles */
     .chat-bubble { padding: 0.85rem 1rem; border-radius: 10px; margin-bottom: 0.75rem; max-width: 82%; word-wrap: break-word; }
     .chat-bubble.user      { background: var(--accent-color); color: #fff; margin-left: auto; border-bottom-right-radius: 0; }
@@ -195,26 +205,54 @@ if "step" not in st.session_state:
     st.session_state.saved_resume_files = []
     st.session_state.generated_emails = {}
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Helper Functions ─────────────────────────────────────────────────────────
 def clamp_score(raw) -> int:
+    """Clamp score to valid 0–100 range."""
     try:
         return max(0, min(int(raw), 100))
     except (TypeError, ValueError):
         return 0
 
+
 def badge_class(score: int) -> str:
-    if score >= 75: return "badge-high"
-    if score >= 50: return "badge-mid"
+    """Return CSS class for score badge colour."""
+    if score >= 75:
+        return "badge-high"
+    if score >= 50:
+        return "badge-mid"
     return "badge-low"
 
+
+def get_decision(score: int) -> str:
+    """Return human-readable hiring decision based on score."""
+    if score >= 75:
+        return "🟢 Strong Hire"
+    elif score >= 60:
+        return "🟡 Consider"
+    else:
+        return "🔴 Reject"
+
+
+def get_match_label(score: int) -> str:
+    """Return match strength label."""
+    if score >= 75:
+        return "🟢 **High Match**"
+    elif score >= 60:
+        return "🟡 **Medium Match**"
+    else:
+        return "🔴 **Low Match**"
+
+
 def extract_job_title(jd: str) -> str:
+    """Grab first non-empty line from JD as job title."""
     for line in jd.splitlines():
         s = line.strip()
         if s:
             return s[:80]
     return "the position"
 
-# ─── Callbacks ────────────────────────────────────────────────────────────────
+
+# ─── Step Callbacks ───────────────────────────────────────────────────────────
 def proceed_to_weighting():
     if not st.session_state.saved_job_description.strip():
         st.warning("⚠️ Please paste a Job Description before proceeding.")
@@ -238,7 +276,7 @@ def proceed_to_weighting():
 
 def run_final_analysis(weighted_reqs, resume_files, job_description):
     with st.spinner("🔬 Deep-analysing all candidates…"):
-        # Parse PDFs
+        # ── Parse PDFs ────────────────────────────────────
         resumes = []
         for f in resume_files:
             text = extract_pdf_text(f)
@@ -251,6 +289,7 @@ def run_final_analysis(weighted_reqs, resume_files, job_description):
             st.error("❌ No readable PDFs found. Please re-upload valid resumes.")
             return
 
+        # ── Score each candidate ──────────────────────────
         results = []
         bar = st.progress(0.0, "Starting…")
 
@@ -276,9 +315,12 @@ def run_final_analysis(weighted_reqs, resume_files, job_description):
 
         bar.empty()
 
-        st.session_state.candidates = sorted(results, key=lambda x: x["overall_score"], reverse=True)
+        # ── Sort by score descending ──────────────────────
+        st.session_state.candidates = sorted(
+            results, key=lambda x: x["overall_score"], reverse=True
+        )
 
-        # Build RAG indices
+        # ── Build RAG index per candidate ─────────────────
         st.session_state.rag_retrievers = {}
         st.session_state.chat_histories = {}
         for c in st.session_state.candidates:
@@ -317,6 +359,7 @@ def trigger_analysis():
         st.session_state.saved_job_description,
     )
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGE SHELL
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -337,24 +380,25 @@ if st.session_state.step == "upload":
     st.markdown("<h2 class='section-header'>Step 1 &nbsp;·&nbsp; Provide Your Data</h2>", unsafe_allow_html=True)
 
     col1, col2 = st.columns(2, gap="large")
+
     with col1:
         st.markdown("<h5>📝 Job Description</h5>", unsafe_allow_html=True)
         st.session_state.saved_job_description = st.text_area(
-            "JD",
+            "",
             value=st.session_state.saved_job_description,
             placeholder="Paste the full job description here…",
             height=300,
-            label_visibility="collapsed",
         )
+
     with col2:
         st.markdown("<h5>👥 Upload Candidate Resumes (PDF)</h5>", unsafe_allow_html=True)
         uploaded = st.file_uploader(
-            "Resumes",
+            "",
             type=["pdf"],
             accept_multiple_files=True,
-            label_visibility="collapsed",
+            key="resume_uploader",
         )
-        # Only update if new files were actually selected — avoids losing files on re-run
+        # Only update if new files selected — avoids losing files on re-run
         if uploaded:
             st.session_state.saved_resume_files = uploaded
         if st.session_state.saved_resume_files:
@@ -362,7 +406,11 @@ if st.session_state.step == "upload":
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="primary-btn">', unsafe_allow_html=True)
-    st.button("🔍 Analyse Requirements →", on_click=proceed_to_weighting, use_container_width=True)
+    st.button(
+        "🔍 Analyse Requirements →",
+        on_click=proceed_to_weighting,
+        use_container_width=True,
+    )
     st.markdown("</div></div>", unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -411,9 +459,11 @@ elif st.session_state.step == "weighting":
 # STEP 3 — Results
 # ═══════════════════════════════════════════════════════════════════════════════
 elif st.session_state.step == "results":
+    # ── Top bar ──────────────────────────────────────────────────────────────
     r1, r2 = st.columns([6, 1])
     with r1:
-        st.success(f"✅ Analysis complete — {len(st.session_state.candidates)} candidate(s) ranked.")
+        st.success(f"✅ Analysis Complete — {len(st.session_state.candidates)} candidate(s) ranked.")
+        st.balloons()
     with r2:
         st.markdown('<div class="secondary-btn">', unsafe_allow_html=True)
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
@@ -421,109 +471,151 @@ elif st.session_state.step == "results":
 
     tabs = st.tabs(["🏆 Leaderboard", "🤝 Compare Candidates", "✉️ Email Drafts"])
 
-    # ── Leaderboard ──────────────────────────────────────
+    # ════════════════════════════════════════════════════
+    # TAB 1 — Leaderboard
+    # ════════════════════════════════════════════════════
     with tabs[0]:
         if not st.session_state.candidates:
             st.info("No candidates processed. Go back and try again.")
+        else:
+            # 🏆 Top candidate highlight
+            top = st.session_state.candidates[0]
+            st.success(f"🏆 Top Candidate: **{top['name']}** — {clamp_score(top['overall_score'])} / 100")
 
-        for rank, cand in enumerate(st.session_state.candidates, start=1):
-            name = cand["name"]
-            score = clamp_score(cand.get("overall_score", 0))
-            is_error = "Error:" in name
+            for rank, cand in enumerate(st.session_state.candidates, start=1):
+                name = cand["name"]
+                score = clamp_score(cand.get("overall_score", 0))
+                is_error = "Error:" in name
+                decision = get_decision(score)
 
-            st.markdown('<div class="input-card" style="margin-bottom:1.5rem;">', unsafe_allow_html=True)
+                st.markdown('<div class="input-card" style="margin-bottom:1.5rem;">', unsafe_allow_html=True)
 
-            h1, h2, h3 = st.columns([1, 5, 2])
-            with h1:
-                st.markdown(f"<h2 style='color:#4A5568;margin:0;line-height:1;'>#{rank}</h2>", unsafe_allow_html=True)
-            with h2:
-                st.markdown(f"<p class='candidate-name'>{name}</p>", unsafe_allow_html=True)
-            with h3:
+                # Header row
+                h1, h2, h3 = st.columns([1, 5, 2])
+                with h1:
+                    st.markdown(f"<h2 style='color:#4A5568;margin:0;line-height:1;'>#{rank}</h2>", unsafe_allow_html=True)
+                with h2:
+                    st.markdown(f"<p class='candidate-name'>{name}</p>", unsafe_allow_html=True)
+                with h3:
+                    st.markdown(
+                        f"<div style='text-align:right;padding-top:6px;'>"
+                        f"<span class='badge {badge_class(score)}'>{score} / 100</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                # Progress bar — value must be 0.0–1.0
+                st.progress(score / 100.0)
+
+                # Match label + decision
+                info_col1, info_col2 = st.columns([1, 1])
+                with info_col1:
+                    st.markdown(get_match_label(score))
+                with info_col2:
+                    st.markdown(f"**Decision:** {decision}")
+
+                # Summary
                 st.markdown(
-                    f"<div style='text-align:right;padding-top:6px;'>"
-                    f"<span class='badge {badge_class(score)}'>{score} / 100</span></div>",
+                    f"<p style='color:var(--subtle-text-color);margin-top:0.6rem;'>{cand['summary']}</p>",
                     unsafe_allow_html=True,
                 )
 
-            # FIX: divide by 100 so st.progress receives 0.0–1.0
-            st.progress(score / 100.0)
-            st.markdown(
-                f"<p style='color:var(--subtle-text-color);margin-top:0.6rem;'>{cand['summary']}</p>",
-                unsafe_allow_html=True,
-            )
+                if not is_error:
+                    # XAI breakdown
+                    with st.expander("📊 Detailed XAI Requirement Analysis"):
+                        req_list = cand.get("requirement_analysis", [])
+                        if not req_list:
+                            st.info("No requirement data available.")
+                        for r in req_list:
+                            if r["match_status"]:
+                                st.markdown(
+                                    f"<div class='xai-item xai-met'>"
+                                    f"<b>✅ Met:</b> {r['requirement']}"
+                                    f"<br><small><i>Evidence: \"{r['evidence']}\"</i></small>"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
+                            else:
+                                st.markdown(
+                                    f"<div class='xai-item xai-gap'>"
+                                    f"<b>❌ Gap:</b> {r['requirement']}"
+                                    f"<br><small><i>Reason: {r['evidence']}</i></small>"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
 
-            if not is_error:
-                # XAI
-                with st.expander("📊 Detailed XAI Requirement Analysis"):
-                    req_list = cand.get("requirement_analysis", [])
-                    if not req_list:
-                        st.info("No requirement data available.")
-                    for r in req_list:
-                        if r["match_status"]:
+                    # Interview questions
+                    if st.button("🎯 Generate Interview Questions", key=f"iq_{name}_{rank}"):
+                        with st.spinner("Generating tailored questions…"):
+                            qs = generate_interview_questions(
+                                cand["name"],
+                                cand["summary"],
+                                st.session_state.saved_job_description,
+                                st.session_state.llm,
+                            )
+                        qc1, qc2 = st.columns(2)
+                        with qc1:
+                            st.markdown("**🗣️ Behavioral Questions**")
+                            for q in qs.behavioral:
+                                st.markdown(f"- {q}")
+                        with qc2:
+                            st.markdown("**⚙️ Technical Questions**")
+                            for q in qs.technical:
+                                st.markdown(f"- {q}")
+
+                    # RAG Chat
+                    st.markdown(
+                        "<hr style='border-color:var(--border-color);margin:1.5rem 0;'>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("<h5>💬 Chat About This Candidate</h5>", unsafe_allow_html=True)
+
+                    chat_box = st.container(height=230)
+                    with chat_box:
+                        for msg in st.session_state.chat_histories.get(name, []):
                             st.markdown(
-                                f"<div class='xai-item xai-met'><b>✅ Met:</b> {r['requirement']}"
-                                f"<br><small><i>Evidence: \"{r['evidence']}\"</i></small></div>",
+                                f"<div class='chat-bubble {msg['role']}'>{msg['content']}</div>",
                                 unsafe_allow_html=True,
                             )
+
+                    if prompt := st.chat_input(f"Ask about {name}…", key=f"chat_{name}_{rank}"):
+                        retriever = st.session_state.rag_retrievers.get(name)
+                        if retriever:
+                            st.session_state.chat_histories[name].append(
+                                {"role": "user", "content": prompt}
+                            )
+                            with chat_box:
+                                st.markdown(
+                                    f"<div class='chat-bubble user'>{prompt}</div>",
+                                    unsafe_allow_html=True,
+                                )
+                                with st.spinner("Thinking…"):
+                                    answer = ask_rag_question(retriever, prompt, st.session_state.llm)
+                                st.session_state.chat_histories[name].append(
+                                    {"role": "assistant", "content": answer}
+                                )
+                                st.markdown(
+                                    f"<div class='chat-bubble assistant'>{answer}</div>",
+                                    unsafe_allow_html=True,
+                                )
                         else:
-                            st.markdown(
-                                f"<div class='xai-item xai-gap'><b>❌ Gap:</b> {r['requirement']}"
-                                f"<br><small><i>Reason: {r['evidence']}</i></small></div>",
-                                unsafe_allow_html=True,
-                            )
+                            st.warning("RAG index not available for this candidate.")
 
-                # Interview questions
-                if st.button("🎯 Generate Interview Questions", key=f"iq_{name}_{rank}"):
-                    with st.spinner("Generating tailored questions…"):
-                        qs = generate_interview_questions(
-                            cand["name"],
-                            cand["summary"],
-                            st.session_state.saved_job_description,
-                            st.session_state.llm,
-                        )
-                    qc1, qc2 = st.columns(2)
-                    with qc1:
-                        st.markdown("**🗣️ Behavioral**")
-                        for q in qs.behavioral:
-                            st.markdown(f"- {q}")
-                    with qc2:
-                        st.markdown("**⚙️ Technical**")
-                        for q in qs.technical:
-                            st.markdown(f"- {q}")
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                # RAG chat
-                st.markdown("<hr style='border-color:var(--border-color);margin:1.5rem 0;'>", unsafe_allow_html=True)
-                st.markdown("<h5>💬 Chat About This Candidate</h5>", unsafe_allow_html=True)
-                chat_box = st.container(height=230)
-                with chat_box:
-                    for msg in st.session_state.chat_histories.get(name, []):
-                        st.markdown(
-                            f"<div class='chat-bubble {msg['role']}'>{msg['content']}</div>",
-                            unsafe_allow_html=True,
-                        )
-
-                if prompt := st.chat_input(f"Ask about {name}…", key=f"chat_{name}_{rank}"):
-                    retriever = st.session_state.rag_retrievers.get(name)
-                    if retriever:
-                        st.session_state.chat_histories[name].append({"role": "user", "content": prompt})
-                        with chat_box:
-                            st.markdown(f"<div class='chat-bubble user'>{prompt}</div>", unsafe_allow_html=True)
-                            with st.spinner("Thinking…"):
-                                answer = ask_rag_question(retriever, prompt, st.session_state.llm)
-                            st.session_state.chat_histories[name].append({"role": "assistant", "content": answer})
-                            st.markdown(f"<div class='chat-bubble assistant'>{answer}</div>", unsafe_allow_html=True)
-                    else:
-                        st.warning("RAG index not available for this candidate.")
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── Compare ──────────────────────────────────────────
+    # ════════════════════════════════════════════════════
+    # TAB 2 — Compare Candidates
+    # ════════════════════════════════════════════════════
     with tabs[1]:
         valid_names = [c["name"] for c in st.session_state.candidates if "Error:" not in c["name"]]
         if not valid_names:
             st.warning("No valid candidates available to compare.")
         else:
-            selected = st.multiselect("Select 2 or more candidates to compare:", valid_names, key="compare_list")
+            selected = st.multiselect(
+                "Select 2 or more candidates to compare side-by-side:",
+                valid_names,
+                key="compare_list",
+            )
             if len(selected) >= 2:
                 lookup = {c["name"]: c for c in st.session_state.candidates}
                 cols = st.columns(len(selected))
@@ -532,28 +624,38 @@ elif st.session_state.step == "results":
                     s = clamp_score(d.get("overall_score", 0))
                     with cols[idx]:
                         st.markdown(f"<h4 style='margin-bottom:0.3rem;'>{sel_name}</h4>", unsafe_allow_html=True)
-                        st.markdown(f"<span class='badge {badge_class(s)}'>{s} / 100</span>", unsafe_allow_html=True)
-                        st.progress(s / 100.0)   # FIX: 0.0–1.0
+                        st.markdown(
+                            f"<span class='badge {badge_class(s)}'>{s} / 100</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.progress(s / 100.0)
+                        st.markdown(f"**Decision:** {get_decision(s)}")
                         st.markdown("<br>**AI Summary**", unsafe_allow_html=True)
-                        st.markdown(f"<p style='color:var(--subtle-text-color);font-size:0.88rem;'>{d['summary']}</p>", unsafe_allow_html=True)
+                        st.markdown(
+                            f"<p style='color:var(--subtle-text-color);font-size:0.88rem;'>{d['summary']}</p>",
+                            unsafe_allow_html=True,
+                        )
                         met   = [r for r in d.get("requirement_analysis", []) if r["match_status"]]
                         unmet = [r for r in d.get("requirement_analysis", []) if not r["match_status"]]
                         if met:
-                            st.markdown("**✅ Met**")
+                            st.markdown("**✅ Met Requirements**")
                             for r in met:
                                 st.markdown(f"<small>• {r['requirement']}</small>", unsafe_allow_html=True)
                         if unmet:
-                            st.markdown("**❌ Missing**")
+                            st.markdown("**❌ Missing Requirements**")
                             for r in unmet:
                                 st.markdown(f"<small>• {r['requirement']}</small>", unsafe_allow_html=True)
                         st.markdown("<hr style='border-color:var(--border-color);'>", unsafe_allow_html=True)
             elif len(selected) == 1:
                 st.info("Select at least one more candidate to compare.")
 
-    # ── Email Drafts ─────────────────────────────────────
+    # ════════════════════════════════════════════════════
+    # TAB 3 — Email Drafts
+    # ════════════════════════════════════════════════════
     with tabs[2]:
         st.markdown("<h3 class='section-header'>✉️ Email Generation Centre</h3>", unsafe_allow_html=True)
         valid = [c for c in st.session_state.candidates if "Error:" not in c["name"]]
+
         if not valid:
             st.warning("⚠️ No valid candidates — cannot generate emails.")
         else:
@@ -569,28 +671,35 @@ elif st.session_state.step == "results":
 
             if st.button("✉️ Generate All Emails", use_container_width=True, type="primary"):
                 with st.spinner("✍️ Crafting personalised emails…"):
-                    title = extract_job_title(st.session_state.saved_job_description)
+                    title  = extract_job_title(st.session_state.saved_job_description)
                     dt_str = f"{idate.strftime('%A, %B %d, %Y')} at {itime.strftime('%I:%M %p')}"
                     st.session_state.generated_emails = generate_email_templates(
                         valid, {"title": title}, num_invite, min_score, dt_str, st.session_state.llm
                     )
 
             if st.session_state.get("generated_emails"):
-                st.markdown("<hr style='border-color:var(--border-color);margin:2rem 0;'>", unsafe_allow_html=True)
+                st.markdown(
+                    "<hr style='border-color:var(--border-color);margin:2rem 0;'>",
+                    unsafe_allow_html=True,
+                )
                 inv_col, rej_col = st.columns(2)
                 with inv_col:
                     st.markdown("<h4>✅ Interview Invitations</h4>", unsafe_allow_html=True)
-                    for em in st.session_state.generated_emails.get("invitations", []):
-                        with st.expander(f"To: {em['name']}", expanded=True):
-                            st.code(em["email_body"], language=None)
-                    if not st.session_state.generated_emails.get("invitations"):
+                    invites = st.session_state.generated_emails.get("invitations", [])
+                    if invites:
+                        for em in invites:
+                            with st.expander(f"To: {em['name']}", expanded=True):
+                                st.code(em["email_body"], language=None)
+                    else:
                         st.info("No candidates met the score threshold.")
                 with rej_col:
                     st.markdown("<h4>❌ Rejection Emails</h4>", unsafe_allow_html=True)
-                    for em in st.session_state.generated_emails.get("rejections", []):
-                        with st.expander(f"To: {em['name']}", expanded=True):
-                            st.code(em["email_body"], language=None)
-                    if not st.session_state.generated_emails.get("rejections"):
+                    rejects = st.session_state.generated_emails.get("rejections", [])
+                    if rejects:
+                        for em in rejects:
+                            with st.expander(f"To: {em['name']}", expanded=True):
+                                st.code(em["email_body"], language=None)
+                    else:
                         st.info("All candidates were invited — no rejections needed.")
 
 st.markdown("</div>", unsafe_allow_html=True)
