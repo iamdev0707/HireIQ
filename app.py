@@ -11,6 +11,7 @@ from utils import (
 )
 import time
 import json
+import sqlite3
 from datetime import datetime
 from functools import lru_cache
 
@@ -28,6 +29,79 @@ st.set_page_config(
     page_icon="🧠",
     layout="wide",
 )
+
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+def init_db():
+    conn = sqlite3.connect("hireiq.db")
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS candidates (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_name TEXT,
+            name     TEXT,
+            score    INTEGER,
+            summary  TEXT,
+            ts       TEXT
+        )
+    """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notes (
+            candidate TEXT,
+            note      TEXT,
+            ts        TEXT
+        )
+    """
+    )
+    conn.commit()
+    return conn
+
+
+def save_candidates_to_db(candidates, job_name=""):
+    conn = init_db()
+    cur = conn.cursor()
+    ts = str(datetime.now())
+    for c in candidates:
+        if "Error:" not in c["name"]:
+            cur.execute(
+                "INSERT INTO candidates (job_name, name, score, summary, ts) VALUES (?,?,?,?,?)",
+                (job_name, c["name"], c["overall_score"], c["summary"], ts),
+            )
+    conn.commit()
+    conn.close()
+
+
+def save_note_to_db(candidate_name: str, note: str):
+    conn = init_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO notes (candidate, note, ts) VALUES (?,?,?)",
+        (candidate_name, note, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_historical_stats():
+    try:
+        conn = init_db()
+        cur = conn.cursor()
+        cur.execute("SELECT AVG(score) FROM candidates")
+        avg = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM candidates")
+        total = cur.fetchone()[0]
+        cur.execute(
+            "SELECT COUNT(DISTINCT job_name) FROM candidates WHERE job_name != ''"
+        )
+        roles = cur.fetchone()[0]
+        conn.close()
+        return round(avg or 0, 1), total, roles
+    except Exception:
+        return 0.0, 0, 0
+
 
 # ─── LLM Init ─────────────────────────────────────────────────────────────────
 if "llm" not in st.session_state:
@@ -59,6 +133,7 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .hiq-header h1{font-family:'Playfair Display',serif;font-size:5rem;font-weight:700;background:linear-gradient(135deg,#007BFF,#00C6FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:up 1s ease-out 0.2s both;}
 .hiq-header p{color:var(--muted);font-size:1.15rem;animation:up 1s ease-out 0.5s both;}
 .hiq-sh{font-size:1.4rem;font-weight:600;border-bottom:1px solid var(--border);padding-bottom:.75rem;margin-bottom:1.25rem;}
+.login-card{max-width:400px;margin:6rem auto;background:#161B22;border:1px solid #30363D;border-radius:16px;padding:2.5rem;}
 .stButton>button{border-radius:8px;padding:12px 24px;font-weight:600;transition:all .2s ease!important;}
 @keyframes pulse{0%{box-shadow:0 0 0 0 var(--glow);}70%{box-shadow:0 0 0 10px rgba(0,123,255,0);}100%{box-shadow:0 0 0 0 rgba(0,123,255,0);}}
 .pbtn>button{background:var(--accent)!important;color:#fff!important;border:none!important;animation:pulse 2s infinite;}
@@ -93,8 +168,8 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .cname{font-size:1.6rem;font-weight:700;color:#fff;margin:0;}
 .action-tag{display:inline-block;padding:3px 12px;border-radius:8px;font-size:.83rem;font-weight:600;background:rgba(0,123,255,.12);color:#007BFF;border:1px solid rgba(0,123,255,.3);}
 .activity-item{padding:.4rem .8rem;border-left:2px solid var(--accent);margin-bottom:.4rem;font-size:.88rem;color:var(--muted);}
+.hist-card{background:#161B22;border:1px solid #30363D;border-radius:12px;padding:1.2rem;margin-bottom:.5rem;}
 #MainMenu,footer{visibility:hidden;}
-/* FIX uploadupload: zero out Streamlit's injected text, inject clean label */
 [data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"]::after{content:"Browse files";font-size:.88rem;font-weight:600;color:#E2E8F0;}
@@ -118,10 +193,15 @@ if "step" not in st.session_state:
             "shortlist": [],
             "job_name": "",
             "activity_log": [],
+            "authenticated": False,
         }
     )
-# Guards for sessions started before these keys existed
-for _key, _default in [("shortlist", []), ("job_name", ""), ("activity_log", [])]:
+for _key, _default in [
+    ("shortlist", []),
+    ("job_name", ""),
+    ("activity_log", []),
+    ("authenticated", False),
+]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
 
@@ -165,7 +245,6 @@ def next_action(score):
     return "❌ Reject candidate"
 
 
-# FEATURE: cached label using lru_cache
 @lru_cache(maxsize=64)
 def cached_label(score: int) -> str:
     if score >= 85:
@@ -186,7 +265,6 @@ def job_title(jd):
 
 
 def llm_cached(key, prompt):
-    """Call LLM only once per key; return cached result thereafter."""
     if key not in st.session_state:
         try:
             resp = st.session_state.llm.invoke(prompt)
@@ -202,25 +280,26 @@ def log_activity(msg: str):
 
 
 def tag_css_class(tag: str) -> str:
-    mapping = {
+    return {
         "High Priority": "tag-high",
         "Needs Review": "tag-review",
         "Technical Round": "tag-technical",
         "Final Interview": "tag-final",
         "Rejected": "tag-rejected",
-    }
-    return mapping.get(tag, "tag-review")
+    }.get(tag, "tag-review")
 
 
 def save_session_data():
-    data = {
-        "timestamp": str(datetime.now()),
-        "job_name": st.session_state.get("job_name", ""),
-        "job_description": st.session_state.saved_jd,
-        "candidates": st.session_state.candidates,
-        "shortlist": st.session_state.shortlist,
-    }
-    return json.dumps(data, indent=2)
+    return json.dumps(
+        {
+            "timestamp": str(datetime.now()),
+            "job_name": st.session_state.get("job_name", ""),
+            "job_description": st.session_state.saved_jd,
+            "candidates": st.session_state.candidates,
+            "shortlist": st.session_state.shortlist,
+        },
+        indent=2,
+    )
 
 
 def generate_pdf_report(text: str) -> str:
@@ -282,6 +361,8 @@ def run_analysis():
         bar = st.progress(0.0, "Starting…")
         for i, res in enumerate(resumes):
             bar.progress((i + 1) / len(resumes), f"Scoring {res['filename']}…")
+            # FEATURE: async processing feel
+            st.toast(f"⚡ Processing {res['filename']} with AI engine…")
             try:
                 data = score_candidate_explainable(
                     st.session_state.saved_jd,
@@ -310,6 +391,9 @@ def run_analysis():
             results, key=lambda x: x["overall_score"], reverse=True
         )
 
+        # FEATURE: persist to SQLite
+        save_candidates_to_db(st.session_state.candidates, st.session_state.job_name)
+
         st.session_state.rag_retrievers = {}
         st.session_state.chat_histories = {}
         for c in st.session_state.candidates:
@@ -325,12 +409,48 @@ def run_analysis():
                 except Exception as e:
                     st.warning(f"RAG index failed for {c['name']}: {e}")
 
-        log_activity(f"Analysis complete — {len(results)} candidate(s) scored")
+        log_activity(
+            f"Analysis complete — {len(results)} candidate(s) scored & saved to DB"
+        )
         st.session_state.step = "results"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# HEADER
+# FEATURE: LOGIN SCREEN — shown before anything else
+# ══════════════════════════════════════════════════════════════════════════════
+if not st.session_state.authenticated:
+    st.markdown(
+        """
+    <div class="hiq-header" style="margin-top:3rem">
+      <h1>HireIQ</h1>
+      <p>AI-Powered Hiring Intelligence</p>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    _, lc, _ = st.columns([1, 1.2, 1])
+    with lc:
+        st.markdown("<div class='login-card'>", unsafe_allow_html=True)
+        st.markdown("### 🔐 Recruiter Login")
+        user = st.text_input("Username", placeholder="admin")
+        pwd = st.text_input("Password", type="password", placeholder="••••••••")
+        if st.button("Login", use_container_width=True):
+            if user == "admin" and pwd == "hireiq":
+                st.session_state.authenticated = True
+                log_activity("Recruiter logged in")
+                st.rerun()
+            else:
+                st.error("Invalid credentials. Try admin / hireiq")
+        st.markdown(
+            "<br><small style='color:#94A3B8'>Demo credentials: admin / hireiq</small>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HEADER (only shown when authenticated)
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown(
     """
@@ -341,7 +461,16 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-st.caption("⚡ AI caching enabled for faster recruiter workflows")
+
+hdr1, hdr2 = st.columns([8, 1])
+with hdr1:
+    st.caption(
+        "⚡ AI caching enabled · 🗄 SQLite persistence active · 🔐 Authenticated session"
+    )
+with hdr2:
+    if st.button("🚪 Logout", use_container_width=True):
+        st.session_state.authenticated = False
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — UPLOAD
@@ -447,10 +576,9 @@ elif st.session_state.step == "results":
             f"✅ Analysis complete{role_label} — **{len(st.session_state.candidates)}** candidate(s) ranked."
         )
     with tb:
-        session_json = save_session_data()
         st.download_button(
             "💾 Save Session",
-            session_json,
+            save_session_data(),
             file_name=f"hireiq_session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             use_container_width=True,
         )
@@ -478,7 +606,6 @@ elif st.session_state.step == "results":
         with m3:
             st.metric("Strong Matches", strong_matches)
 
-        # Recruitment Snapshot
         high = len([s for s in scores if s >= 75])
         mid = len([s for s in scores if 50 <= s < 75])
         low = len([s for s in scores if s < 50])
@@ -487,14 +614,26 @@ elif st.session_state.step == "results":
             f"- ✅ Strong candidates: **{high}**\n- ⚠️ Medium-fit: **{mid}**\n- ❌ Weak candidates: **{low}**"
         )
 
-        # Score Distribution Chart
         st.markdown("### 📈 Score Distribution")
-        chart_data = {
-            c["name"]: c["overall_score"]
-            for c in st.session_state.candidates
-            if "Error:" not in c["name"]
-        }
-        st.bar_chart(chart_data)
+        st.bar_chart(
+            {
+                c["name"]: c["overall_score"]
+                for c in st.session_state.candidates
+                if "Error:" not in c["name"]
+            }
+        )
+
+    # ── FEATURE: Historical Analytics from SQLite ─────────────────────────────
+    hist_avg, hist_total, hist_roles = get_historical_stats()
+    if hist_total > 0:
+        st.markdown("## 📚 Historical Hiring Analytics")
+        h1, h2, h3 = st.columns(3)
+        with h1:
+            st.metric("All-Time Avg Score", hist_avg)
+        with h2:
+            st.metric("Total Candidates Evaluated", hist_total)
+        with h3:
+            st.metric("Roles Processed", hist_roles)
 
     # ── Top candidate banner ──────────────────────────────────────────────────
     if st.session_state.candidates:
@@ -505,7 +644,7 @@ elif st.session_state.step == "results":
         )
 
         with st.expander("🏆 Why was this candidate ranked #1?"):
-            with st.spinner("Analysing top candidate…"):
+            with st.spinner("Analysing…"):
                 result = llm_cached(
                     "top_candidate_reason",
                     f"""You are a senior hiring director.
@@ -513,7 +652,7 @@ Job Description: {st.session_state.saved_jd}
 Top Candidate: {top['name']}
 Summary: {top['summary']}
 Score: {top_score}
-Explain: Why this candidate ranked highest, biggest strengths, hiring advantages, potential risks, final recommendation.
+Explain: Why ranked highest, biggest strengths, hiring advantages, potential risks, final recommendation.
 Keep it concise and executive-level.""",
                 )
             st.write(result)
@@ -555,7 +694,6 @@ Keep it concise and executive-level.""",
         if not st.session_state.candidates:
             st.info("No candidates found. Go back and try again.")
         else:
-            # ── FEATURE: Search + Filter ──────────────────────────────────
             sf1, sf2 = st.columns([2, 1])
             with sf1:
                 search_query = st.text_input(
@@ -566,7 +704,6 @@ Keep it concise and executive-level.""",
             with sf2:
                 min_filter_score = st.slider("Min Score", 0, 100, 0, key="filter_score")
 
-            # Apply filters
             filtered_candidates = [
                 c
                 for c in st.session_state.candidates
@@ -578,8 +715,6 @@ Keep it concise and executive-level.""",
                     or search_query.lower() in c.get("summary", "").lower()
                 )
             ]
-
-            # Error candidates always shown at bottom
             error_candidates = [
                 c for c in st.session_state.candidates if "Error:" in c["name"]
             ]
@@ -601,7 +736,6 @@ Keep it concise and executive-level.""",
                 with st.container():
                     st.markdown("---")
 
-                    # Rank / Name / Badge
                     r1, r2, r3 = st.columns([1, 5, 2])
                     with r1:
                         st.markdown(
@@ -620,7 +754,6 @@ Keep it concise and executive-level.""",
 
                     st.progress(score / 100.0)
 
-                    # Match / Decision / Action / Cached Label
                     ml, dl, al, cl = st.columns(4)
                     with ml:
                         st.markdown(f"**Match:** {match_label(score)}")
@@ -634,7 +767,6 @@ Keep it concise and executive-level.""",
                     with cl:
                         st.markdown(f"**Rating:** {cached_label(score)}")
 
-                    # Summary
                     st.markdown(
                         f"<p style='color:var(--muted);margin-top:.5rem'>{cand['summary']}</p>",
                         unsafe_allow_html=True,
@@ -643,7 +775,6 @@ Keep it concise and executive-level.""",
                     if not is_err:
                         req_analysis = cand.get("requirement_analysis", [])
 
-                        # Skill Insights
                         matched = [
                             r["requirement"] for r in req_analysis if r["match_status"]
                         ][:3]
@@ -679,7 +810,6 @@ Keep it concise and executive-level.""",
                             "<div style='height:.4rem'></div>", unsafe_allow_html=True
                         )
 
-                        # ── FEATURE: Candidate Tagging ────────────────────
                         tag_col, sl_col, note_col = st.columns([2, 1, 3])
                         with tag_col:
                             tag = st.selectbox(
@@ -707,15 +837,21 @@ Keep it concise and executive-level.""",
                             else:
                                 st.markdown("⭐ **Shortlisted**")
                         with note_col:
-                            st.text_area(
+                            # FEATURE: Candidate Memory — notes with save to DB
+                            note_val = st.text_area(
                                 "Recruiter Notes",
                                 key=f"notes_{name}",
                                 placeholder="Observations, interview notes, concerns…",
                                 height=68,
                                 label_visibility="collapsed",
                             )
+                            if st.button(
+                                "💾 Save Notes to DB", key=f"save_note_{rank}"
+                            ):
+                                save_note_to_db(name, note_val or "")
+                                st.toast(f"✅ Notes saved for {name}")
+                                log_activity(f"Notes saved for: {name}")
 
-                        # Why this score (cached)
                         with st.expander("🧠 Why this score?"):
                             with st.spinner("Analysing…"):
                                 result = llm_cached(
@@ -729,7 +865,6 @@ Keep it concise.""",
                                 )
                             st.write(result)
 
-                        # Why not selected
                         if score < 75:
                             with st.expander("❌ Why not selected?"):
                                 with st.spinner("Analysing…"):
@@ -743,7 +878,6 @@ Give: missing skills, concerns, gaps, hiring risks. Keep it professional and con
                                     )
                                 st.write(result)
 
-                        # ── FEATURE: AI Interview Question Generator ──────
                         with st.expander("🎤 AI Interview Questions"):
                             with st.spinner("Generating questions…"):
                                 result = llm_cached(
@@ -759,7 +893,6 @@ Make them highly relevant to this specific candidate and role.""",
                                 )
                             st.write(result)
 
-                        # XAI Requirement Analysis
                         with st.expander("📊 Full XAI Requirement Analysis"):
                             if not req_analysis:
                                 st.info("No requirement data available.")
@@ -777,7 +910,6 @@ Make them highly relevant to this specific candidate and role.""",
                                         unsafe_allow_html=True,
                                     )
 
-                        # Interview Questions (structured)
                         if st.button(
                             "🎯 Generate Structured Interview Questions",
                             key=f"iq_{rank}",
@@ -799,7 +931,6 @@ Make them highly relevant to this specific candidate and role.""",
                                 for q in qs.technical:
                                     st.markdown(f"- {q}")
 
-                        # RAG Chat
                         st.markdown("---")
                         st.markdown(f"**💬 Chat about {name}**")
                         chat_area = st.container(height=220)
@@ -908,7 +1039,7 @@ Make them highly relevant to this specific candidate and role.""",
                             f"""Compare these candidates for the following role.
 Job Description: {st.session_state.saved_jd}
 Candidates: {compare_data}
-Give: strongest candidate, each candidate's biggest strength, each weakness, hiring recommendation, final ranking.
+Give: strongest candidate, each candidate's biggest strength and weakness, hiring recommendation, final ranking.
 Keep it concise and recruiter-focused."""
                         )
                     st.markdown("### 🤖 AI Comparison Report")
@@ -977,7 +1108,6 @@ Keep it concise and recruiter-focused."""
                     if not st.session_state.generated_emails.get("rejections"):
                         st.info("All candidates were invited — no rejections needed.")
 
-        # ── AI Hiring Report ──────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("## 📄 AI Hiring Report")
         if st.button("📥 Generate Hiring Report", use_container_width=True):
@@ -996,7 +1126,7 @@ Keep it concise and recruiter-focused."""
                     f"""You are a senior hiring consultant.
 {role_line}Job Description: {st.session_state.saved_jd}
 Candidate Data: {report_data}
-Generate a professional hiring report: top candidates ranked, strongest strengths observed, biggest skill gaps, overall hiring recommendation, final shortlist suggestions.
+Generate a professional hiring report: top candidates ranked, strongest strengths, biggest skill gaps, overall recommendation, final shortlist.
 Keep it executive-style and concise."""
                 )
                 st.session_state["final_hiring_report"] = resp.content
@@ -1033,14 +1163,11 @@ Keep it executive-style and concise."""
                 else:
                     st.info("Install `reportlab` to enable PDF export.")
 
-    # ════════════════════════════════════════════════════════════════════════
-    # FEATURE: Recruiter Activity Log (bottom of results page)
-    # ════════════════════════════════════════════════════════════════════════
+    # ── Activity Log ──────────────────────────────────────────────────────────
     if st.session_state.activity_log:
         st.markdown("---")
         st.markdown("## 📈 Recruiter Activity Timeline")
         for activity in reversed(st.session_state.activity_log[-15:]):
             st.markdown(
-                f"<div class='activity-item'>{activity}</div>",
-                unsafe_allow_html=True,
+                f"<div class='activity-item'>{activity}</div>", unsafe_allow_html=True
             )
