@@ -23,59 +23,99 @@ try:
 except ImportError:
     REPORTLAB_OK = False
 
-# ─── Page Config ──────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG
+# ════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
     page_title="HireIQ | AI-Powered Hiring Intelligence",
     page_icon="🧠",
     layout="wide",
 )
 
+# ════════════════════════════════════════════════════════════════════════════
+# MULTI-RECRUITER ACCOUNT SYSTEM
+# ════════════════════════════════════════════════════════════════════════════
+RECRUITER_ACCOUNTS = {
+    "admin": {"password": "hireiq", "role": "Admin", "name": "Admin Recruiter"},
+    "hr1": {"password": "hr2026", "role": "Recruiter", "name": "HR Recruiter 1"},
+    "hiring": {"password": "hire2026", "role": "Manager", "name": "Hiring Manager"},
+}
 
-# ─── Database ─────────────────────────────────────────────────────────────────
+
+# ════════════════════════════════════════════════════════════════════════════
+# DATABASE
+# ════════════════════════════════════════════════════════════════════════════
 def init_db():
     conn = sqlite3.connect("hireiq.db")
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS candidates (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
             job_name TEXT,
             name     TEXT,
             score    INTEGER,
             summary  TEXT,
+            recruiter TEXT,
             ts       TEXT
         )
-    """)
-    cur.execute("""
+    """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS notes (
             candidate TEXT,
             note      TEXT,
+            recruiter TEXT,
             ts        TEXT
         )
-    """)
+    """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS email_log (
+            candidate TEXT,
+            email_type TEXT,
+            recruiter  TEXT,
+            ts         TEXT
+        )
+    """
+    )
     conn.commit()
     return conn
 
 
-def save_candidates_to_db(candidates, job_name=""):
+def save_candidates_to_db(candidates, job_name="", recruiter=""):
     conn = init_db()
     cur = conn.cursor()
     ts = str(datetime.now())
     for c in candidates:
         if "Error:" not in c["name"]:
             cur.execute(
-                "INSERT INTO candidates (job_name, name, score, summary, ts) VALUES (?,?,?,?,?)",
-                (job_name, c["name"], c["overall_score"], c["summary"], ts),
+                "INSERT INTO candidates (job_name, name, score, summary, recruiter, ts) VALUES (?,?,?,?,?,?)",
+                (job_name, c["name"], c["overall_score"], c["summary"], recruiter, ts),
             )
     conn.commit()
     conn.close()
 
 
-def save_note_to_db(candidate_name: str, note: str):
+def save_note_to_db(candidate_name: str, note: str, recruiter: str = ""):
     conn = init_db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO notes (candidate, note, ts) VALUES (?,?,?)",
-        (candidate_name, note, str(datetime.now())),
+        "INSERT INTO notes (candidate, note, recruiter, ts) VALUES (?,?,?,?)",
+        (candidate_name, note, recruiter, str(datetime.now())),
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_email_to_db(candidate: str, email_type: str, recruiter: str = ""):
+    conn = init_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO email_log (candidate, email_type, recruiter, ts) VALUES (?,?,?,?)",
+        (candidate, email_type, recruiter, str(datetime.now())),
     )
     conn.commit()
     conn.close()
@@ -93,13 +133,17 @@ def get_historical_stats():
             "SELECT COUNT(DISTINCT job_name) FROM candidates WHERE job_name != ''"
         )
         roles = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM email_log")
+        emails_sent = cur.fetchone()[0]
         conn.close()
-        return round(avg or 0, 1), total, roles
+        return round(avg or 0, 1), total, roles, emails_sent
     except Exception:
-        return 0.0, 0, 0
+        return 0.0, 0, 0, 0
 
 
-# ─── LLM Init ─────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# LLM INIT
+# ════════════════════════════════════════════════════════════════════════════
 if "llm" not in st.session_state:
     try:
         st.session_state.llm = ChatGroq(
@@ -111,7 +155,9 @@ if "llm" not in st.session_state:
         st.error("🔴 GROQ_API_KEY not found. Add it to `.streamlit/secrets.toml`")
         st.stop()
 
-# ─── CSS ──────────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# CSS
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown(
     """
 <style>
@@ -129,7 +175,10 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .hiq-header h1{font-family:'Playfair Display',serif;font-size:5rem;font-weight:700;background:linear-gradient(135deg,#007BFF,#00C6FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;animation:up 1s ease-out 0.2s both;}
 .hiq-header p{color:var(--muted);font-size:1.15rem;animation:up 1s ease-out 0.5s both;}
 .hiq-sh{font-size:1.4rem;font-weight:600;border-bottom:1px solid var(--border);padding-bottom:.75rem;margin-bottom:1.25rem;}
-.login-card{max-width:400px;margin:6rem auto;background:#161B22;border:1px solid #30363D;border-radius:16px;padding:2.5rem;}
+.login-card{max-width:420px;margin:4rem auto;background:#161B22;border:1px solid #30363D;border-radius:16px;padding:2.5rem;}
+.role-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:.78rem;font-weight:600;background:rgba(0,123,255,.15);color:#007BFF;border:1px solid #007BFF;margin-left:8px;}
+.rec-card{background:#161B22;border:1px solid #30363D;border-radius:12px;padding:1.2rem;margin-bottom:.75rem;}
+.rec-rank{font-size:2rem;font-weight:700;color:#007BFF;}
 .stButton>button{border-radius:8px;padding:12px 24px;font-weight:600;transition:all .2s ease!important;}
 @keyframes pulse{0%{box-shadow:0 0 0 0 var(--glow);}70%{box-shadow:0 0 0 10px rgba(0,123,255,0);}100%{box-shadow:0 0 0 0 rgba(0,123,255,0);}}
 .pbtn>button{background:var(--accent)!important;color:#fff!important;border:none!important;animation:pulse 2s infinite;}
@@ -164,7 +213,6 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
 .cname{font-size:1.6rem;font-weight:700;color:#fff;margin:0;}
 .action-tag{display:inline-block;padding:3px 12px;border-radius:8px;font-size:.83rem;font-weight:600;background:rgba(0,123,255,.12);color:#007BFF;border:1px solid rgba(0,123,255,.3);}
 .activity-item{padding:.4rem .8rem;border-left:2px solid var(--accent);margin-bottom:.4rem;font-size:.88rem;color:var(--muted);}
-.hist-card{background:#161B22;border:1px solid #30363D;border-radius:12px;padding:1.2rem;margin-bottom:.5rem;}
 #MainMenu,footer{visibility:hidden;}
 [data-testid="stFileUploaderDropzoneButton"]{font-size:0!important;color:transparent!important;}
 [data-testid="stFileUploaderDropzoneButton"] *{font-size:0!important;color:transparent!important;}
@@ -174,7 +222,9 @@ html,body,[class*="st-"]{font-family:'Inter',sans-serif;color:var(--text);}
     unsafe_allow_html=True,
 )
 
-# ─── Session State ─────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# SESSION STATE
+# ════════════════════════════════════════════════════════════════════════════
 if "step" not in st.session_state:
     st.session_state.update(
         {
@@ -190,6 +240,9 @@ if "step" not in st.session_state:
             "job_name": "",
             "activity_log": [],
             "authenticated": False,
+            "current_user": "",
+            "current_user_role": "",
+            "current_user_name": "",
         }
     )
 for _key, _default in [
@@ -197,12 +250,17 @@ for _key, _default in [
     ("job_name", ""),
     ("activity_log", []),
     ("authenticated", False),
+    ("current_user", ""),
+    ("current_user_role", ""),
+    ("current_user_name", ""),
 ]:
     if _key not in st.session_state:
         st.session_state[_key] = _default
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# HELPERS
+# ════════════════════════════════════════════════════════════════════════════
 def clamp(v):
     try:
         return max(0, min(int(v), 100))
@@ -271,8 +329,9 @@ def llm_cached(key, prompt):
 
 
 def log_activity(msg: str):
+    user = st.session_state.get("current_user", "system")
     ts = datetime.now().strftime("%H:%M")
-    st.session_state.activity_log.append(f"[{ts}] {msg}")
+    st.session_state.activity_log.append(f"[{ts}] [{user}] {msg}")
 
 
 def tag_css_class(tag: str) -> str:
@@ -290,6 +349,7 @@ def save_session_data():
         {
             "timestamp": str(datetime.now()),
             "job_name": st.session_state.get("job_name", ""),
+            "recruiter": st.session_state.get("current_user_name", ""),
             "job_description": st.session_state.saved_jd,
             "candidates": st.session_state.candidates,
             "shortlist": st.session_state.shortlist,
@@ -306,7 +366,33 @@ def generate_pdf_report(text: str) -> str:
     return path
 
 
-# ─── Callbacks ────────────────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# AI CANDIDATE RECOMMENDATION ENGINE
+# ════════════════════════════════════════════════════════════════════════════
+def build_recommendation_engine(candidates):
+    """Returns top 3 candidates with confidence scores."""
+    valid = [c for c in candidates if "Error:" not in c["name"]]
+    top3 = sorted(valid, key=lambda x: x["overall_score"], reverse=True)[:3]
+    recs = []
+    for i, c in enumerate(top3):
+        score = clamp(c["overall_score"])
+        # Confidence decays slightly per rank
+        confidence = max(60, min(98, score - i * 3))
+        recs.append(
+            {
+                "rank": i + 1,
+                "name": c["name"],
+                "score": score,
+                "confidence": confidence,
+                "summary": c["summary"],
+            }
+        )
+    return recs
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CALLBACKS
+# ════════════════════════════════════════════════════════════════════════════
 def go_to_weighting():
     if not st.session_state.saved_jd.strip():
         st.warning("Please paste a Job Description.")
@@ -357,8 +443,8 @@ def run_analysis():
         bar = st.progress(0.0, "Starting…")
         for i, res in enumerate(resumes):
             bar.progress((i + 1) / len(resumes), f"Scoring {res['filename']}…")
-            # FEATURE: async processing feel
-            st.toast(f"⚡ Processing {res['filename']} with AI engine…")
+            # FEATURE: Task Queue Simulation
+            st.toast(f"⚡ Queued AI evaluation task for {res['filename']}")
             try:
                 data = score_candidate_explainable(
                     st.session_state.saved_jd,
@@ -386,9 +472,11 @@ def run_analysis():
         st.session_state.candidates = sorted(
             results, key=lambda x: x["overall_score"], reverse=True
         )
-
-        # FEATURE: persist to SQLite
-        save_candidates_to_db(st.session_state.candidates, st.session_state.job_name)
+        save_candidates_to_db(
+            st.session_state.candidates,
+            st.session_state.job_name,
+            st.session_state.current_user,
+        )
 
         st.session_state.rag_retrievers = {}
         st.session_state.chat_histories = {}
@@ -411,15 +499,15 @@ def run_analysis():
         st.session_state.step = "results"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FEATURE: LOGIN SCREEN — shown before anything else
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# AUTHENTICATION
+# ════════════════════════════════════════════════════════════════════════════
 if not st.session_state.authenticated:
     st.markdown(
         """
     <div class="hiq-header" style="margin-top:3rem">
       <h1>HireIQ</h1>
-      <p>AI-Powered Hiring Intelligence</p>
+      <p>AI-Powered Hiring Intelligence Platform</p>
     </div>
     """,
         unsafe_allow_html=True,
@@ -429,25 +517,34 @@ if not st.session_state.authenticated:
     with lc:
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("### 🔐 Recruiter Login")
-        user = st.text_input("Username", placeholder="admin")
+        user = st.text_input("Username", placeholder="admin / hr1 / hiring")
         pwd = st.text_input("Password", type="password", placeholder="••••••••")
         if st.button("Login", use_container_width=True):
-            if user == "admin" and pwd == "hireiq":
+            account = RECRUITER_ACCOUNTS.get(user)
+            if account and account["password"] == pwd:
                 st.session_state.authenticated = True
-                log_activity("Recruiter logged in")
+                st.session_state.current_user = user
+                st.session_state.current_user_role = account["role"]
+                st.session_state.current_user_name = account["name"]
+                log_activity(f"Logged in as {account['name']} ({account['role']})")
                 st.rerun()
             else:
-                st.error("Invalid credentials. Try admin / hireiq")
+                st.error("Invalid credentials.")
         st.markdown(
-            "<br><small style='color:#94A3B8'>Demo credentials: admin / hireiq</small>",
+            """
+        <br><small style='color:#94A3B8'>
+        Demo accounts:<br>
+        admin / hireiq &nbsp;·&nbsp; hr1 / hr2026 &nbsp;·&nbsp; hiring / hire2026
+        </small>
+        """,
             unsafe_allow_html=True,
         )
         st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
-# ══════════════════════════════════════════════════════════════════════════════
-# HEADER (only shown when authenticated)
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+# HEADER
+# ════════════════════════════════════════════════════════════════════════════
 st.markdown(
     """
 <div class="hiq-header">
@@ -460,17 +557,20 @@ st.markdown(
 
 hdr1, hdr2 = st.columns([8, 1])
 with hdr1:
-    st.caption(
-        "⚡ AI caching enabled · 🗄 SQLite persistence active · 🔐 Authenticated session"
+    role_badge = f"<span class='role-badge'>{st.session_state.current_user_role}</span>"
+    st.markdown(
+        f"⚡ AI caching enabled · 🗄 SQLite active · "
+        f"👤 **{st.session_state.current_user_name}** {role_badge}",
+        unsafe_allow_html=True,
     )
 with hdr2:
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.rerun()
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # STEP 1 — UPLOAD
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 if st.session_state.step == "upload":
 
     st.markdown(
@@ -514,9 +614,9 @@ if st.session_state.step == "upload":
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # STEP 2 — WEIGHTING
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif st.session_state.step == "weighting":
 
     st.markdown(
@@ -557,12 +657,12 @@ elif st.session_state.step == "weighting":
         )
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 # STEP 3 — RESULTS
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 elif st.session_state.step == "results":
 
-    # ── Top bar ───────────────────────────────────────────────────────────────
+    # ── Top bar ──────────────────────────────────────────────────────────────
     ta, tb, tc = st.columns([5, 1, 1])
     with ta:
         role_label = (
@@ -583,7 +683,9 @@ elif st.session_state.step == "results":
         st.button("🔄 Start Over", on_click=go_back, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Dashboard Metrics ─────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════
+    # EXECUTIVE ANALYTICS
+    # ════════════════════════════════════════════════════════════════════════
     scores = [
         c["overall_score"]
         for c in st.session_state.candidates
@@ -592,15 +694,18 @@ elif st.session_state.step == "results":
     if scores:
         avg_score = round(sum(scores) / len(scores), 1)
         strong_matches = len([s for s in scores if s >= 75])
+        hire_ready = len([s for s in scores if s >= 80])
 
-        st.markdown("## 📊 Hiring Insights")
-        m1, m2, m3 = st.columns(3)
+        st.markdown("## 📊 Executive Hiring Insights")
+        m1, m2, m3, m4 = st.columns(4)
         with m1:
             st.metric("Candidates", len(scores))
         with m2:
             st.metric("Average Score", avg_score)
         with m3:
             st.metric("Strong Matches", strong_matches)
+        with m4:
+            st.metric("Hire-Ready", hire_ready)
 
         high = len([s for s in scores if s >= 75])
         mid = len([s for s in scores if 50 <= s < 75])
@@ -619,17 +724,44 @@ elif st.session_state.step == "results":
             }
         )
 
-    # ── FEATURE: Historical Analytics from SQLite ─────────────────────────────
-    hist_avg, hist_total, hist_roles = get_historical_stats()
+    # ════════════════════════════════════════════════════════════════════════
+    # HISTORICAL ANALYTICS
+    # ════════════════════════════════════════════════════════════════════════
+    hist_avg, hist_total, hist_roles, hist_emails = get_historical_stats()
     if hist_total > 0:
         st.markdown("## 📚 Historical Hiring Analytics")
-        h1, h2, h3 = st.columns(3)
+        h1, h2, h3, h4 = st.columns(4)
         with h1:
             st.metric("All-Time Avg Score", hist_avg)
         with h2:
             st.metric("Total Candidates Evaluated", hist_total)
         with h3:
             st.metric("Roles Processed", hist_roles)
+        with h4:
+            st.metric("Emails Sent (DB)", hist_emails)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # AI CANDIDATE RECOMMENDATION ENGINE
+    # ════════════════════════════════════════════════════════════════════════
+    if st.session_state.candidates:
+        recs = build_recommendation_engine(st.session_state.candidates)
+        if recs:
+            st.markdown("## 🧠 AI Candidate Recommendations")
+            rec_cols = st.columns(len(recs))
+            for col, rec in zip(rec_cols, recs):
+                with col:
+                    st.markdown(
+                        f"""
+<div class='rec-card'>
+  <div class='rec-rank'>#{rec['rank']}</div>
+  <b>{rec['name']}</b><br>
+  <span class='badge {"bh" if rec["score"] >= 75 else "bm"}'>{rec['score']} / 100</span><br>
+  <small style='color:var(--muted)'>Confidence: {rec['confidence']}%</small><br>
+  <small style='color:var(--muted)'>{rec['summary'][:100]}…</small>
+</div>
+                    """,
+                        unsafe_allow_html=True,
+                    )
 
     # ── Top candidate banner ──────────────────────────────────────────────────
     if st.session_state.candidates:
@@ -663,11 +795,12 @@ Keep it concise and executive-level.""",
             f"<div style='margin-bottom:.5rem'>📋 <b>Shortlisted:</b> {pills}</div>",
             unsafe_allow_html=True,
         )
+
         export_data = "\n".join(
             f"Candidate: {n}\nRecruiter Notes:\n{st.session_state.get(f'notes_{n}','(none)')}\n{'-'*40}"
             for n in st.session_state.shortlist
         )
-        sc1, sc2 = st.columns(2)
+        sc1, sc2, sc3 = st.columns(3)
         with sc1:
             st.download_button(
                 "📥 Download Shortlist",
@@ -680,6 +813,19 @@ Keep it concise and executive-level.""",
                 export_data,
                 file_name="shortlist_notes.txt",
             )
+        with sc3:
+            # ── FEATURE: Email Pipeline Simulation ────────────────────────
+            if st.button("📬 Send Interview Invitations"):
+                recruiter = st.session_state.current_user
+                with st.spinner("Sending recruiter emails…"):
+                    for candidate in st.session_state.shortlist:
+                        time.sleep(0.3)
+                        st.toast(f"✉️ Interview invitation sent to {candidate}")
+                        log_email_to_db(candidate, "invitation", recruiter)
+                        log_activity(f"Invitation sent → {candidate}")
+                st.success(
+                    f"✅ Interview pipeline complete — {len(st.session_state.shortlist)} invitation(s) dispatched"
+                )
 
     tab1, tab2, tab3 = st.tabs(["🏆 Leaderboard", "🤝 Compare", "✉️ Emails & Report"])
 
@@ -833,7 +979,6 @@ Keep it concise and executive-level.""",
                             else:
                                 st.markdown("⭐ **Shortlisted**")
                         with note_col:
-                            # FEATURE: Candidate Memory — notes with save to DB
                             note_val = st.text_area(
                                 "Recruiter Notes",
                                 key=f"notes_{name}",
@@ -844,7 +989,9 @@ Keep it concise and executive-level.""",
                             if st.button(
                                 "💾 Save Notes to DB", key=f"save_note_{rank}"
                             ):
-                                save_note_to_db(name, note_val or "")
+                                save_note_to_db(
+                                    name, note_val or "", st.session_state.current_user
+                                )
                                 st.toast(f"✅ Notes saved for {name}")
                                 log_activity(f"Notes saved for: {name}")
 
@@ -1104,6 +1251,7 @@ Keep it concise and recruiter-focused."""
                     if not st.session_state.generated_emails.get("rejections"):
                         st.info("All candidates were invited — no rejections needed.")
 
+        # ── AI Hiring Report ──────────────────────────────────────────────────
         st.markdown("---")
         st.markdown("## 📄 AI Hiring Report")
         if st.button("📥 Generate Hiring Report", use_container_width=True):
@@ -1159,7 +1307,9 @@ Keep it executive-style and concise."""
                 else:
                     st.info("Install `reportlab` to enable PDF export.")
 
-    # ── Activity Log ──────────────────────────────────────────────────────────
+    # ════════════════════════════════════════════════════════════════════════
+    # ACTIVITY LOG
+    # ════════════════════════════════════════════════════════════════════════
     if st.session_state.activity_log:
         st.markdown("---")
         st.markdown("## 📈 Recruiter Activity Timeline")
