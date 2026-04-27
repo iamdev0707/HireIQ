@@ -35,8 +35,7 @@ st.set_page_config(
 def init_db():
     conn = sqlite3.connect("hireiq.db")
     cur = conn.cursor()
-    cur.execute(
-        """
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS candidates (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
             job_name TEXT,
@@ -45,17 +44,14 @@ def init_db():
             summary  TEXT,
             ts       TEXT
         )
-    """
-    )
-    cur.execute(
-        """
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS notes (
             candidate TEXT,
             note      TEXT,
             ts        TEXT
         )
-    """
-    )
+    """)
     conn.commit()
     return conn
 
